@@ -44,7 +44,11 @@ pub struct Client {
 
 #[async_trait]
 impl CosignCapabilities for Client {
-    async fn triangulate(&mut self, image: &oci_distribution::Reference, auth: &Auth) -> Result<(oci_distribution::Reference, String)> {
+    async fn triangulate(
+        &mut self,
+        image: &oci_distribution::Reference,
+        auth: &Auth,
+    ) -> Result<(oci_distribution::Reference, String)> {
         let manifest_digest = self
             .registry_client
             .fetch_manifest_digest(image, &auth.into())
@@ -123,7 +127,7 @@ impl CosignCapabilities for Client {
         manifest.media_type = Some(OCI_IMAGE_MEDIA_TYPE.to_string());
         self.registry_client
             .push(
-                &target_reference,
+                target_reference,
                 &layers[..],
                 config,
                 &auth.into(),
@@ -152,11 +156,7 @@ impl Client {
             .await?;
         let image_data = self
             .registry_client
-            .pull(
-                cosign_image,
-                &oci_auth,
-                vec![SIGSTORE_OCI_MEDIA_TYPE],
-            )
+            .pull(cosign_image, &oci_auth, vec![SIGSTORE_OCI_MEDIA_TYPE])
             .await?;
 
         Ok((manifest, image_data.layers))

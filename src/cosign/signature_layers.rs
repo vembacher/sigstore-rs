@@ -205,7 +205,10 @@ impl SignatureLayer {
     /// }
     ///
     /// ```
-    pub fn new_unsigned(image_ref: &oci_distribution::Reference, manifest_digest: &str) -> Result<Self> {
+    pub fn new_unsigned(
+        image_ref: &oci_distribution::Reference,
+        manifest_digest: &str,
+    ) -> Result<Self> {
         let simple_signing = SimpleSigning::new(image_ref, manifest_digest);
 
         let payload = serde_json::to_vec(&simple_signing)?;
