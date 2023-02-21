@@ -60,7 +60,7 @@ struct Cli {
 
     /// Name of the image to verify
     #[clap(short, long)]
-    image: String,
+    image: oci_distribution::Reference,
 
     /// Whether the registry uses HTTP
     #[clap(long)]
@@ -80,7 +80,7 @@ async fn run_app(cli: &Cli) -> anyhow::Result<()> {
         sigstore::cosign::ClientBuilder::default().with_oci_client_config(oci_client_config);
     let mut client = client_builder.build()?;
 
-    let image: &str = cli.image.as_str();
+    let image = &cli.image;
 
     let (cosign_signature_image, source_image_digest) = client.triangulate(image, auth).await?;
     debug!(cosign_signature_image= ?cosign_signature_image, source_image_digest= ?source_image_digest);

@@ -44,30 +44,17 @@ pub struct Client {
 
 #[async_trait]
 impl CosignCapabilities for Client {
-    async fn triangulate(&mut self, image: &str, auth: &Auth) -> Result<(String, String)> {
-        let image_reference: oci_distribution::Reference =
-            image
-                .parse()
-                .map_err(|_| SigstoreError::OciReferenceNotValidError {
-                    reference: image.to_string(),
-                })?;
-
+    async fn triangulate(&mut self, image: &oci_distribution::Reference, auth: &Auth) -> Result<(oci_distribution::Reference, String)> {
         let manifest_digest = self
             .registry_client
-            .fetch_manifest_digest(&image_reference, &auth.into())
+            .fetch_manifest_digest(image, &auth.into())
             .await?;
 
-        let sign = format!(
-            "{}/{}:{}.sig",
-            image_reference.registry(),
-            image_reference.repository(),
-            manifest_digest.replace(':', "-")
+        let reference = oci_distribution::Reference::with_tag(
+            image.registry().into(),
+            image.repository().into(),
+            manifest_digest.replace(':', "-") + ".sig",
         );
-        let reference = sign
-            .parse()
-            .map_err(|_| SigstoreError::OciReferenceNotValidError {
-                reference: image.to_string(),
-            })?;
 
         Ok((reference, manifest_digest))
     }
@@ -76,7 +63,7 @@ impl CosignCapabilities for Client {
         &mut self,
         auth: &Auth,
         source_image_digest: &str,
-        cosign_image: &str,
+        cosign_image: &oci_distribution::Reference,
     ) -> Result<Vec<SignatureLayer>> {
         let (manifest, layers) = self.fetch_manifest_and_layers(auth, cosign_image).await?;
         let image_manifest = match manifest {
@@ -105,16 +92,9 @@ impl CosignCapabilities for Client {
         &mut self,
         annotations: Option<HashMap<String, String>>,
         auth: &Auth,
-        target_reference: &str,
+        target_reference: &oci_distribution::Reference,
         signature_layers: Vec<SignatureLayer>,
     ) -> Result<PushResponse> {
-        let image_reference: oci_distribution::Reference =
-            target_reference
-                .parse()
-                .map_err(|_| SigstoreError::OciReferenceNotValidError {
-                    reference: target_reference.to_string(),
-                })?;
-
         let layers: Vec<oci_distribution::client::ImageLayer> = signature_layers
             .iter()
             .filter_map(|sl| {
@@ -143,7 +123,7 @@ impl CosignCapabilities for Client {
         manifest.media_type = Some(OCI_IMAGE_MEDIA_TYPE.to_string());
         self.registry_client
             .push(
-                &image_reference,
+                &target_reference,
                 &layers[..],
                 config,
                 &auth.into(),
@@ -159,28 +139,21 @@ impl Client {
     async fn fetch_manifest_and_layers(
         &mut self,
         auth: &Auth,
-        cosign_image: &str,
+        cosign_image: &oci_distribution::Reference,
     ) -> Result<(
         oci_distribution::manifest::OciManifest,
         Vec<oci_distribution::client::ImageLayer>,
     )> {
-        let cosign_image_reference: oci_distribution::Reference =
-            cosign_image
-                .parse()
-                .map_err(|_| SigstoreError::OciReferenceNotValidError {
-                    reference: cosign_image.to_string(),
-                })?;
-
         let oci_auth: oci_distribution::secrets::RegistryAuth = auth.into();
 
         let (manifest, _) = self
             .registry_client
-            .pull_manifest(&cosign_image_reference, &oci_auth)
+            .pull_manifest(cosign_image, &oci_auth)
             .await?;
         let image_data = self
             .registry_client
             .pull(
-                &cosign_image_reference,
+                cosign_image,
                 &oci_auth,
                 vec![SIGSTORE_OCI_MEDIA_TYPE],
             )
@@ -212,10 +185,10 @@ mod tests {
 
     #[tokio::test]
     async fn triangulate_sigstore_object() {
-        let image = "docker.io/busybox:latest";
+        let image: oci_distribution::Reference = "docker.io/busybox:latest".parse().unwrap();
         let image_digest =
             String::from("sha256:f3cfc9d0dbf931d3db4685ec659b7ac68e2a578219da4aae65427886e649b06b");
-        let expected_image = "docker.io/library/busybox:sha256-f3cfc9d0dbf931d3db4685ec659b7ac68e2a578219da4aae65427886e649b06b.sig".parse().unwrap();
+        let expected_image: oci_distribution::Reference = "docker.io/library/busybox:sha256-f3cfc9d0dbf931d3db4685ec659b7ac68e2a578219da4aae65427886e649b06b.sig".parse().unwrap();
         let mock_client = MockOciClient {
             fetch_manifest_digest_response: Some(Ok(image_digest.clone())),
             pull_response: None,
@@ -225,7 +198,7 @@ mod tests {
         let mut cosign_client = build_test_client(mock_client);
 
         let reference = cosign_client
-            .triangulate(image, &crate::registry::Auth::Anonymous)
+            .triangulate(&image, &crate::registry::Auth::Anonymous)
             .await;
 
         assert!(reference.is_ok());

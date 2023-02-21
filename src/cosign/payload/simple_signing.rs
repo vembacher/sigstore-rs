@@ -47,7 +47,7 @@ impl fmt::Display for SimpleSigning {
 impl SimpleSigning {
     /// Create a new simple signing payload due to the given image reference
     /// and manifest_digest
-    pub fn new(image_ref: &str, manifest_digest: &str) -> Self {
+    pub fn new(image_ref: &oci_distribution::Reference, manifest_digest: &str) -> Self {
         Self {
             critical: Critical {
                 type_name: CRITICAL_TYPE_NAME.to_string(),

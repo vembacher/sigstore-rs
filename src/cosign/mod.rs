@@ -69,7 +69,7 @@ pub mod constraint;
 pub trait CosignCapabilities {
     /// Calculate the cosign image reference.
     /// This is the location cosign stores signatures.
-    async fn triangulate(&mut self, image: &str, auth: &Auth) -> Result<(String, String)>;
+    async fn triangulate(&mut self, image: &oci_distribution::Reference, auth: &Auth) -> Result<(oci_distribution::Reference, String)>;
 
     /// Returns the list of [`SignatureLayer`](crate::cosign::signature_layers::SignatureLayer)
     /// objects that are associated with the given signature object.
@@ -107,7 +107,7 @@ pub trait CosignCapabilities {
         &mut self,
         auth: &Auth,
         source_image_digest: &str,
-        cosign_image: &str,
+        cosign_image: &oci_distribution::Reference,
     ) -> Result<Vec<SignatureLayer>>;
 
     /// Push [`SignatureLayer`] objects to the registry. This function will do
@@ -134,7 +134,7 @@ pub trait CosignCapabilities {
         &mut self,
         annotations: Option<HashMap<String, String>>,
         auth: &Auth,
-        target_reference: &str,
+        target_reference: &oci_distribution::Reference,
         signature_layers: Vec<SignatureLayer>,
     ) -> Result<PushResponse>;
 }
@@ -461,7 +461,7 @@ TNMea7Ix/stJ5TfcLLeABLE4BNJOsQ4vnBHJ
     #[test]
     fn add_constrains_all_succeed() {
         let mut signature_layer = SignatureLayer::new_unsigned(
-            "test_image",
+            &"test_image".parse().unwrap(),
             "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         )
         .expect("create SignatureLayer failed");
@@ -481,7 +481,7 @@ TNMea7Ix/stJ5TfcLLeABLE4BNJOsQ4vnBHJ
     #[test]
     fn add_constrain_some_failed() {
         let mut signature_layer = SignatureLayer::new_unsigned(
-            "test_image",
+            &"test_image".parse().unwrap(),
             "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         )
         .expect("create SignatureLayer failed");
@@ -539,7 +539,7 @@ TNMea7Ix/stJ5TfcLLeABLE4BNJOsQ4vnBHJ
             .build()
             .expect("failed to create oci client");
 
-        let image_ref = format!("localhost:{}/{}", port, SIGNED_IMAGE);
+        let image_ref: oci_distribution::Reference = format!("localhost:{}/{}", port, SIGNED_IMAGE).parse().unwrap();
         prepare_image_to_be_signed(&mut client, &image_ref).await;
 
         let (cosign_signature_image, source_image_digest) = client
@@ -596,8 +596,7 @@ TNMea7Ix/stJ5TfcLLeABLE4BNJOsQ4vnBHJ
     }
 
     #[cfg(feature = "test-registry")]
-    async fn prepare_image_to_be_signed(client: &mut Client, image_ref: &str) {
-        let image_ref = image_ref.parse().expect("failed to parse image reference");
+    async fn prepare_image_to_be_signed(client: &mut Client, image_ref: &oci_distribution::Reference) {
         let data = client
             .registry_client
             .pull(

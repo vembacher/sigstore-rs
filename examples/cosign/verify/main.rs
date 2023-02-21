@@ -101,7 +101,7 @@ struct Cli {
     loops: u32,
 
     /// Name of the image to verify
-    image: String,
+    image: oci_distribution::Reference,
 
     /// Whether the registry uses HTTP
     #[clap(long)]
@@ -227,7 +227,7 @@ async fn run_app(
         }
     }
 
-    let image: &str = cli.image.as_str();
+    let image = &cli.image;
 
     let (cosign_signature_image, source_image_digest) = client.triangulate(image, auth).await?;
 
