@@ -900,12 +900,12 @@ JsB89BPhZYch0U0hKANx5TY+ncrm0s8bfJxxHoenAEFhwhuXeb4PqIrtoQ==
 
         let integrated_time = Utc::now().checked_sub_signed(Duration::minutes(1)).unwrap();
         let bundle = Bundle {
-            signed_entry_timestamp: "not relevant".to_string(),
+            signed_entry_timestamp: Default::default(),
             payload: Payload {
-                body: "not relevant".to_string(),
+                body: Default::default(),
                 integrated_time: integrated_time.timestamp(),
                 log_index: 0,
-                log_id: "not relevant".to_string(),
+                log_id: Default::default(),
             },
         };
 
@@ -947,12 +947,12 @@ JsB89BPhZYch0U0hKANx5TY+ncrm0s8bfJxxHoenAEFhwhuXeb4PqIrtoQ==
 
         let integrated_time = Utc::now().checked_sub_signed(Duration::minutes(1)).unwrap();
         let bundle = Bundle {
-            signed_entry_timestamp: "not relevant".to_string(),
+            signed_entry_timestamp: Default::default(),
             payload: Payload {
-                body: "not relevant".to_string(),
+                body: Default::default(),
                 integrated_time: integrated_time.timestamp(),
                 log_index: 0,
-                log_id: "not relevant".to_string(),
+                log_id: Default::default(),
             },
         };
 
@@ -993,12 +993,12 @@ JsB89BPhZYch0U0hKANx5TY+ncrm0s8bfJxxHoenAEFhwhuXeb4PqIrtoQ==
 
         let integrated_time = Utc::now().checked_sub_signed(Duration::minutes(1)).unwrap();
         let bundle = Bundle {
-            signed_entry_timestamp: "not relevant".to_string(),
+            signed_entry_timestamp: Default::default(),
             payload: Payload {
-                body: "not relevant".to_string(),
+                body: Default::default(),
                 integrated_time: integrated_time.timestamp(),
                 log_index: 0,
-                log_id: "not relevant".to_string(),
+                log_id: Default::default(),
             },
         };
 

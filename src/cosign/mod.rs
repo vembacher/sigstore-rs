@@ -153,20 +153,24 @@ pub trait CosignCapabilities {
     /// Verifies the signature produced by cosign when signing the given blob via the `cosign sign-blob` command
     ///
     /// The parameters:
-    /// * `cert`: a PEM encoded x509 certificate that contains the public key used to verify the signature
+    /// * `cert`: a PEM encoded x509 certificate (optionally additionally Base64 encoded) that contains the public key used to verify the signature
     /// * `signature`: the base64 encoded signature of the blob that has to be verified
     /// * `blob`: the contents of the blob
     ///
     /// This function returns `Ok())` when the given signature has been verified, otherwise returns an `Err`.
-    fn verify_blob(cert: &str, signature: &str, blob: &[u8]) -> Result<()> {
-        let cert = BASE64_STD_ENGINE.decode(cert)?;
-        let pem = pem::parse(cert)?;
+    fn verify_blob(cert: &[u8], signature: Signature, blob: &[u8]) -> Result<()> {
+        // try to parse PEM from Base64 at first or from the raw bytes if it fails.
+        let pem = BASE64_STD_ENGINE
+            .decode(cert)
+            .map_err(SigstoreError::from)
+            .and_then(|decoded| pem::parse(decoded).map_err(SigstoreError::from))
+            .or_else(|_| pem::parse(cert).map_err(SigstoreError::from))?;
+
         let cert = Certificate::from_der(&pem.contents).map_err(|e| {
             SigstoreError::PKCS8SpkiError(format!("parse der into cert failed: {e}"))
         })?;
         let spki = cert.tbs_certificate.subject_public_key_info;
         let ver_key = CosignVerificationKey::try_from(&spki)?;
-        let signature = Signature::Base64Encoded(signature.as_bytes());
         ver_key.verify_signature(signature, blob)?;
         Ok(())
     }

@@ -16,8 +16,10 @@
 extern crate clap;
 extern crate sigstore;
 use clap::Parser;
-use sigstore::cosign::client::Client;
-use sigstore::cosign::CosignCapabilities;
+use sigstore::{
+    cosign::{client::Client, CosignCapabilities},
+    crypto::Signature,
+};
 
 extern crate tracing_subscriber;
 use std::fs;
@@ -60,7 +62,11 @@ pub async fn main() {
     let signature = fs::read_to_string(&cli.signature).expect("error reading signature");
     let blob = fs::read(&cli.blob.as_str()).expect("error reading blob file");
 
-    match Client::verify_blob(&certificate, &signature, &blob) {
+    match Client::verify_blob(
+        certificate.as_bytes(),
+        Signature::Base64Encoded(signature.as_bytes()),
+        &blob,
+    ) {
         Ok(_) => println!("Verification succeeded"),
         Err(e) => eprintln!("Verification failed {:?}", e),
     }

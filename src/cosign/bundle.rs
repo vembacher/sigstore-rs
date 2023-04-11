@@ -13,8 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cosign::bundle::RekordData::HashOnly;
+use base64::Engine;
 use olpc_cjson::CanonicalFormatter;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
+use serde_with::{base64::Base64, hex::Hex, serde_as};
 use std::cmp::PartialEq;
 
 use crate::crypto::{CosignVerificationKey, Signature};
@@ -26,14 +29,18 @@ use crate::errors::{Result, SigstoreError};
 /// ```sh,ignore,no_run
 /// cosign sign-blob --bundle=artifact.bundle artifact.txt
 /// ```
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedArtifactBundle {
-    /// Represents the `base64Signature' field which is the signature of the
+    /// Decoded representation of the `base64Signature' field which is the signature of the
     /// of the blob.
-    pub base64_signature: String,
+    #[serde_as(as = "Base64")]
+    #[serde(rename = "base64Signature")]
+    pub signature: Vec<u8>,
     /// Represents the 'cert' field which is a PEM encoded certificate.
-    pub cert: String,
+    #[serde_as(as = "Base64")]
+    pub cert: Vec<u8>,
     /// Represents the 'rekorBundle' field.
     pub rekor_bundle: Bundle,
 }
@@ -51,10 +58,12 @@ impl SignedArtifactBundle {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct Bundle {
-    pub signed_entry_timestamp: String,
+    #[serde_as(as = "Base64")]
+    pub signed_entry_timestamp: Vec<u8>,
     pub payload: Payload,
 }
 
@@ -87,21 +96,154 @@ impl Bundle {
         })?;
 
         rekor_pub_key.verify_signature(
-            Signature::Base64Encoded(bundle.signed_entry_timestamp.as_bytes()),
+            Signature::Raw(bundle.signed_entry_timestamp.as_slice()),
             &buf,
         )?;
         Ok(())
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Payload {
-    pub body: String,
+    #[serde(
+        serialize_with = "serialize_b64_canonical_json",
+        deserialize_with = "deserialize_b64_canonical_json"
+    )]
+    pub body: CompactPayloadBody,
     pub integrated_time: i64,
     pub log_index: i64,
+    #[serde_as(as = "Hex")]
     #[serde(rename = "logID")]
-    pub log_id: String,
+    pub log_id: [u8; 32],
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactPayloadBody {
+    pub api_version: String,
+    #[serde(flatten)]
+    pub spec: Spec,
+}
+
+fn serialize_b64_canonical_json<S, T>(payload: &T, s: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    T: Serialize,
+{
+    let mut buf = Vec::new();
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, CanonicalFormatter::new());
+    payload
+        .serialize(&mut ser)
+        .map_err(|err| serde::ser::Error::custom(format!("{err}")))
+        .map(|_| base64::engine::general_purpose::STANDARD.encode(buf))
+        .and_then(|encoded| s.serialize_str(&encoded))
+}
+
+fn deserialize_b64_canonical_json<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let buf = String::deserialize(deserializer)?;
+    base64::engine::general_purpose::STANDARD
+        .decode(buf)
+        .map_err(|err| err.to_string())
+        .and_then(|decoded| serde_json::from_slice::<T>(&decoded).map_err(|e| e.to_string()))
+        .map_err(serde::de::Error::custom)
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", content = "spec")]
+#[serde(rename_all = "lowercase")]
+pub enum Spec {
+    HashedRekord {
+        data: HashedRekordData,
+        signature: RekordSignature,
+    },
+    Rekord {
+        data: RekordData,
+        signature: RekordSignature,
+    },
+}
+
+impl Default for Spec {
+    fn default() -> Self {
+        Spec::HashedRekord {
+            data: Default::default(),
+            signature: Default::default(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HashedRekordData {
+    pub hash: Hash,
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum RekordData {
+    HashOnly {
+        hash: Hash,
+    },
+    ContentOnly {
+        #[serde_as(as = "Base64")]
+        content: Vec<u8>,
+    },
+}
+
+impl Default for RekordData {
+    fn default() -> Self {
+        HashOnly {
+            hash: Default::default(),
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RekordSignature {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<SignatureFormat>,
+    #[serde_as(as = "Base64")]
+    pub content: Vec<u8>,
+    pub public_key: PublicKey,
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicKey {
+    #[serde_as(as = "Base64")]
+    pub content: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SignatureFormat {
+    Pgp,
+    Minisign,
+    #[default]
+    X509,
+    Ssh,
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase", tag = "algorithm", content = "value")]
+pub enum Hash {
+    Sha256(#[serde_as(as = "Hex")] [u8; 32]),
+}
+
+impl Default for Hash {
+    fn default() -> Self {
+        Hash::Sha256([0; 32])
+    }
 }
 
 #[cfg(test)]

@@ -80,6 +80,7 @@ rsa = "0.8.0"
 scrypt = "0.10.0"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_json = "1.0.79"
+serde_with = { version = "2.3", features = ["base64", "hex" ] }
 sha2 = { version = "0.10.6", features = ["oid"] }
 signature = { version = "2.0" }
 thiserror = "1.0.30"
