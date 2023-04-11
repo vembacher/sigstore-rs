@@ -22,8 +22,9 @@ use tracing::warn;
 
 use super::constants::{SIGSTORE_OCI_MEDIA_TYPE, SIGSTORE_SIGNATURE_ANNOTATION};
 use super::{CosignCapabilities, SignatureLayer};
-use crate::cosign::signature_layers::build_signature_layers;
-use crate::crypto::CosignVerificationKey;
+use crate::cosign::bundle::{Bundle, HashedRekordData, RekordData, RekordSignature, Spec};
+use crate::cosign::signature_layers::{build_signature_layers, CertificateSignature};
+use crate::crypto::{CosignVerificationKey, Signature};
 use crate::registry::{Auth, OciReference, PushResponse};
 use crate::{
     crypto::certificate_pool::CertificatePool,
@@ -136,6 +137,48 @@ impl CosignCapabilities for Client {
             )
             .await
             .map(|r| r.into())
+    }
+
+    fn verify_blob_with_bundle(&self, blob: &[u8], bundle: &Bundle) -> Result<()> {
+        let (signature, pem, _hash) = match &bundle.payload.body.spec {
+            Spec::HashedRekord {
+                signature:
+                    RekordSignature {
+                        content,
+                        public_key,
+                        ..
+                    },
+                data: HashedRekordData { hash },
+            } => (content, &public_key.content, hash),
+            Spec::Rekord {
+                signature:
+                    RekordSignature {
+                        content,
+                        public_key,
+                        ..
+                    },
+                data: RekordData::HashOnly { hash },
+            } => (content, &public_key.content, hash),
+            _ => {
+                return Err(SigstoreError::UnexpectedError(
+                    "got unexpected bundle".to_string(),
+                ));
+            }
+        };
+
+        let cert_signature = CertificateSignature::from_certificate(
+            pem.as_slice(),
+            self.fulcio_cert_pool
+                .as_ref()
+                .ok_or(SigstoreError::SigstoreFulcioCertificatesNotProvidedError)?,
+            bundle,
+        )?;
+
+        cert_signature
+            .verification_key
+            .verify_signature(Signature::Raw(signature.as_slice()), blob)?;
+
+        Ok(())
     }
 }
 

@@ -67,6 +67,7 @@ pub use self::constraint::{Constraint, SignConstraintRefVec};
 use self::verification_constraint::{VerificationConstraint, VerificationConstraintRefVec};
 
 pub mod payload;
+use crate::cosign::bundle::Bundle;
 use crate::registry::oci_reference::OciReference;
 pub use payload::simple_signing;
 
@@ -174,6 +175,8 @@ pub trait CosignCapabilities {
         ver_key.verify_signature(signature, blob)?;
         Ok(())
     }
+
+    fn verify_blob_with_bundle(&self, blob: &[u8], bundle: &Bundle) -> Result<()>;
 
     ///
     /// Verifies the signature produced by cosign when signing the given blob via the `cosign sign-blob` command

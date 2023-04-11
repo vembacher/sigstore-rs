@@ -15,9 +15,9 @@
 
 use clap::Parser;
 use sigstore::cosign::bundle::SignedArtifactBundle;
-use sigstore::cosign::client::Client;
+use sigstore::cosign::ClientBuilder;
 use sigstore::cosign::CosignCapabilities;
-use sigstore::crypto::{CosignVerificationKey, Signature, SigningScheme};
+use sigstore::crypto::{CosignVerificationKey, SigningScheme};
 use std::fs;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -35,6 +35,10 @@ struct Cli {
     /// File containing Rekor's public key (e.g.: ~/.sigstore/root/targets/rekor.pub)
     #[clap(long, required(false))]
     rekor_pub_key: String,
+
+    /// File containing the Fulcio root cert (e.g.: ~/.sigstore/root/targets/fulcio.crt.pem)
+    #[clap(long, required(false))]
+    fulcio_cert: String,
 
     /// Enable verbose mode
     #[clap(short, long)]
@@ -58,11 +62,20 @@ pub async fn main() {
     let rekor_pub_key =
         CosignVerificationKey::from_pem(rekor_pub_pem.as_bytes(), &SigningScheme::default())
             .expect("Cannot create Rekor verification key");
+    let fulcio_pem =
+        fs::read_to_string(&cli.fulcio_cert).expect("error reading fulcio's root cert");
     let bundle_json = fs::read_to_string(&cli.bundle).expect("error reading bundle json file");
     let blob = fs::read(&cli.blob.as_str()).expect("error reading blob file");
 
     let bundle = SignedArtifactBundle::new_verified(&bundle_json, &rekor_pub_key).unwrap();
-    match Client::verify_blob(&bundle.cert, Signature::Raw(&bundle.signature), &blob) {
+
+    let cosign_client = ClientBuilder::default()
+        .with_fulcio_cert(fulcio_pem.as_bytes())
+        .with_rekor_pub_key(rekor_pub_pem.as_str())
+        .build()
+        .unwrap();
+
+    match cosign_client.verify_blob_with_bundle(&blob, &bundle.rekor_bundle) {
         Ok(_) => println!("Verification succeeded"),
         Err(e) => eprintln!("Verification failed: {}", e),
     }
