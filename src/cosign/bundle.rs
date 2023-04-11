@@ -111,7 +111,7 @@ pub struct Payload {
         serialize_with = "serialize_b64_canonical_json",
         deserialize_with = "deserialize_b64_canonical_json"
     )]
-    pub body: CompactPayloadBody,
+    pub body: PayloadBody,
     pub integrated_time: i64,
     pub log_index: i64,
     #[serde_as(as = "Hex")]
@@ -122,7 +122,7 @@ pub struct Payload {
 #[serde_as]
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct CompactPayloadBody {
+pub struct PayloadBody {
     pub api_version: String,
     #[serde(flatten)]
     pub spec: Spec,
