@@ -87,19 +87,23 @@ impl Bundle {
         bundle: &Bundle,
         rekor_pub_key: &CosignVerificationKey,
     ) -> Result<()> {
+        let canonical_bundle = bundle.to_canonical_json()?;
+
+        rekor_pub_key.verify_signature(
+            Signature::Raw(bundle.signed_entry_timestamp.as_slice()),
+            &canonical_bundle,
+        )?;
+        Ok(())
+    }
+    pub fn to_canonical_json(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
         let mut ser = serde_json::Serializer::with_formatter(&mut buf, CanonicalFormatter::new());
-        bundle.payload.serialize(&mut ser).map_err(|e| {
+        self.payload.serialize(&mut ser).map_err(|e| {
             SigstoreError::UnexpectedError(format!(
                 "Cannot create canonical JSON representation of bundle: {e:?}"
             ))
         })?;
-
-        rekor_pub_key.verify_signature(
-            Signature::Raw(bundle.signed_entry_timestamp.as_slice()),
-            &buf,
-        )?;
-        Ok(())
+        Ok(buf)
     }
 }
 
