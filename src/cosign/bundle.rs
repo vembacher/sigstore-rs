@@ -19,6 +19,7 @@ use olpc_cjson::CanonicalFormatter;
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{base64::Base64, hex::Hex, serde_as};
 use std::cmp::PartialEq;
+use std::fmt::Debug;
 
 use crate::crypto::{CosignVerificationKey, Signature};
 use crate::errors::{Result, SigstoreError};
@@ -87,33 +88,38 @@ impl Bundle {
         bundle: &Bundle,
         rekor_pub_key: &CosignVerificationKey,
     ) -> Result<()> {
-        let canonical_bundle = bundle.to_canonical_json()?;
+        let canonical_payload = bundle.payload.to_canonical_json()?;
 
         rekor_pub_key.verify_signature(
             Signature::Raw(bundle.signed_entry_timestamp.as_slice()),
-            &canonical_bundle,
+            &canonical_payload,
         )?;
         Ok(())
     }
     pub fn to_canonical_json(&self) -> Result<Vec<u8>> {
-        let mut buf = Vec::new();
-        let mut ser = serde_json::Serializer::with_formatter(&mut buf, CanonicalFormatter::new());
-        self.payload.serialize(&mut ser).map_err(|e| {
-            SigstoreError::UnexpectedError(format!(
-                "Cannot create canonical JSON representation of bundle: {e:?}"
-            ))
-        })?;
-        Ok(buf)
+        to_canonical_json(self)
     }
 }
+
+fn to_canonical_json(s: impl Serialize + Debug) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, CanonicalFormatter::new());
+    s.serialize(&mut ser).map_err(|e| {
+        SigstoreError::UnexpectedError(format!(
+            "Cannot create canonical JSON representation of {s:?}: {e:?}"
+        ))
+    })?;
+    Ok(buf)
+}
+
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Payload {
     #[serde(
-        serialize_with = "serialize_b64_canonical_json",
-        deserialize_with = "deserialize_b64_canonical_json"
+    serialize_with = "serialize_b64_canonical_json",
+    deserialize_with = "deserialize_b64_canonical_json"
     )]
     pub body: PayloadBody,
     pub integrated_time: i64,
@@ -121,6 +127,12 @@ pub struct Payload {
     #[serde_as(as = "Hex")]
     #[serde(rename = "logID")]
     pub log_id: [u8; 32],
+}
+
+impl Payload {
+    pub fn to_canonical_json(&self) -> Result<Vec<u8>> {
+        to_canonical_json(self)
+    }
 }
 
 #[serde_as]
@@ -133,9 +145,9 @@ pub struct PayloadBody {
 }
 
 fn serialize_b64_canonical_json<S, T>(payload: &T, s: S) -> std::result::Result<S::Ok, S::Error>
-where
-    S: Serializer,
-    T: Serialize,
+    where
+        S: Serializer,
+        T: Serialize,
 {
     let mut buf = Vec::new();
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, CanonicalFormatter::new());
@@ -147,9 +159,9 @@ where
 }
 
 fn deserialize_b64_canonical_json<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: DeserializeOwned,
+    where
+        D: Deserializer<'de>,
+        T: DeserializeOwned,
 {
     let buf = String::deserialize(deserializer)?;
     base64::engine::general_purpose::STANDARD
