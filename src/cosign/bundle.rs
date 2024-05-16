@@ -112,14 +112,13 @@ fn to_canonical_json(s: impl Serialize + Debug) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-
 #[serde_as]
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Payload {
     #[serde(
-    serialize_with = "serialize_b64_canonical_json",
-    deserialize_with = "deserialize_b64_canonical_json"
+        serialize_with = "serialize_b64_canonical_json",
+        deserialize_with = "deserialize_b64_canonical_json"
     )]
     pub body: PayloadBody,
     pub integrated_time: i64,
@@ -145,9 +144,9 @@ pub struct PayloadBody {
 }
 
 fn serialize_b64_canonical_json<S, T>(payload: &T, s: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-        T: Serialize,
+where
+    S: Serializer,
+    T: Serialize,
 {
     let mut buf = Vec::new();
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, CanonicalFormatter::new());
@@ -159,9 +158,9 @@ fn serialize_b64_canonical_json<S, T>(payload: &T, s: S) -> std::result::Result<
 }
 
 fn deserialize_b64_canonical_json<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
-    where
-        D: Deserializer<'de>,
-        T: DeserializeOwned,
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
 {
     let buf = String::deserialize(deserializer)?;
     base64::engine::general_purpose::STANDARD
