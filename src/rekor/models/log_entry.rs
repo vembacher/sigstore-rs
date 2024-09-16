@@ -106,7 +106,6 @@ pub struct Verification {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InclusionProof {
-    pub checkpoint: String,
     pub hashes: Vec<String>,
     pub log_index: i64,
     pub root_hash: String,
