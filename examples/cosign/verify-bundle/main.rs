@@ -65,7 +65,7 @@ pub async fn main() {
     let fulcio_pem =
         fs::read_to_string(&cli.fulcio_cert).expect("error reading fulcio's root cert");
     let bundle_json = fs::read_to_string(&cli.bundle).expect("error reading bundle json file");
-    let blob = fs::read(&cli.blob.as_str()).expect("error reading blob file");
+    let blob = fs::read(cli.blob.as_str()).expect("error reading blob file");
 
     let bundle = SignedArtifactBundle::new_verified(&bundle_json, &rekor_pub_key).unwrap();
 

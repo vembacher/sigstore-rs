@@ -20,9 +20,9 @@
 //! for golang version.
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STD_ENGINE, Engine as _};
+use crypto_secretbox::aead::{AeadMut, KeyInit};
 use rand::Rng;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use xsalsa20poly1305::aead::{AeadMut, KeyInit};
 
 use crate::errors::*;
 
@@ -33,7 +33,9 @@ pub const SALT_SIZE: u32 = 32;
 pub const NAME_SCRYPT: &str = "scrypt";
 
 /// Scrypt algorithm parameter log2(n)
-pub const SCRYPT_N: u32 = 32768;
+pub const SCRYPT_N_LOW: u32 = 32768;
+
+pub const SCRYPT_N_HIGH: u32 = 65536;
 
 /// Scrypt algorithm parameter r
 pub const SCRYPT_R: u32 = 8;
@@ -95,7 +97,7 @@ impl Default for ScryptKDF {
         Self {
             name: NAME_SCRYPT.into(),
             params: ScryptParams {
-                n: SCRYPT_N,
+                n: SCRYPT_N_LOW,
                 r: SCRYPT_R,
                 p: SCRYPT_P,
             },
@@ -108,7 +110,12 @@ impl ScryptKDF {
     /// Derivate a new key from the given password
     fn key(&self, password: &[u8]) -> Result<Vec<u8>> {
         let log_n = (self.params.n as f64).log2() as u8;
-        let params = scrypt::Params::new(log_n, self.params.r, self.params.p)?;
+        let params = scrypt::Params::new(
+            log_n,
+            self.params.r,
+            self.params.p,
+            scrypt::Params::RECOMMENDED_LEN,
+        )?;
         let mut res = vec![0; BOX_KEY_SIZE];
         scrypt::scrypt(password, &self.salt, &params, &mut res)?;
         Ok(res)
@@ -117,7 +124,10 @@ impl ScryptKDF {
     /// Check whether the given params is as the default,
     /// to avoid a DoS attack.
     fn check_params(&self) -> Result<()> {
-        match self.params.n == SCRYPT_N && self.params.r == SCRYPT_R && self.params.p == SCRYPT_P {
+        match (self.params.n == SCRYPT_N_LOW || self.params.n == SCRYPT_N_HIGH)
+            && self.params.r == SCRYPT_R
+            && self.params.p == SCRYPT_P
+        {
             true => Ok(()),
             false => Err(SigstoreError::PrivateKeyDecryptError(
                 "Unexpected kdf parameters".into(),
@@ -156,10 +166,10 @@ impl SecretBoxCipher {
             ));
         }
         self.encrypted = true;
-        let nonce = xsalsa20poly1305::Nonce::from_slice(&self.nonce);
-        let key = xsalsa20poly1305::Key::from_slice(key);
+        let nonce = crypto_secretbox::Nonce::from_slice(&self.nonce);
+        let key = crypto_secretbox::Key::from_slice(key);
 
-        let mut cipher = xsalsa20poly1305::XSalsa20Poly1305::new(key);
+        let mut cipher = crypto_secretbox::XSalsa20Poly1305::new(key);
         cipher
             .encrypt(nonce, plaintext)
             .map_err(|e| SigstoreError::PrivateKeyEncryptError(e.to_string()))
@@ -167,10 +177,10 @@ impl SecretBoxCipher {
 
     /// Unseal the ciphertext using the key
     fn decrypt(&self, ciphertext: &[u8], key: &[u8]) -> Result<Vec<u8>> {
-        let nonce = xsalsa20poly1305::Nonce::from_slice(&self.nonce);
-        let key = xsalsa20poly1305::Key::from_slice(key);
+        let nonce = crypto_secretbox::Nonce::from_slice(&self.nonce);
+        let key = crypto_secretbox::Key::from_slice(key);
 
-        let mut cipher = xsalsa20poly1305::XSalsa20Poly1305::new(key);
+        let mut cipher = crypto_secretbox::XSalsa20Poly1305::new(key);
         cipher
             .decrypt(nonce, ciphertext)
             .map_err(|e| SigstoreError::PrivateKeyEncryptError(e.to_string()))
@@ -274,7 +284,7 @@ mod tests {
         });
         let data: Data =
             serde_json::from_value(input_json.clone()).expect("Cannot deserialize json Data");
-        let actual_json = serde_json::to_value(&data).expect("Cannot serialize Data back to JSON");
+        let actual_json = serde_json::to_value(data).expect("Cannot serialize Data back to JSON");
         assert_json_eq!(input_json, actual_json);
     }
 }

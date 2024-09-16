@@ -14,29 +14,31 @@
 // limitations under the License.
 
 use tracing::info;
+use webpki::types::CertificateDer;
 
 use super::client::Client;
 use crate::crypto::SigningScheme;
 use crate::crypto::{certificate_pool::CertificatePool, CosignVerificationKey};
 use crate::errors::Result;
-use crate::registry::{Certificate, ClientConfig};
+use crate::registry::ClientConfig;
+use crate::trust::TrustRoot;
 
 /// A builder that generates Client objects.
 ///
 /// ## Rekor integration
 ///
 /// Rekor integration can be enabled by specifying Rekor's public key.
-/// This can be provided via the [`ClientBuilder::with_rekor_pub_key`] method.
+/// This can be provided via a [`crate::trust::ManualTrustRoot`].
 ///
-/// > Note well: the [`tuf`](crate::tuf) module provides helper structs and methods
+/// > Note well: the [`trust::sigstore`](crate::trust::sigstore) module provides helper structs and methods
 /// > to obtain this data from the official TUF repository of the Sigstore project.
 ///
 /// ## Fulcio integration
 ///
 /// Fulcio integration can be enabled by specifying Fulcio's certificate.
-/// This can be provided via the [`ClientBuilder::with_fulcio_cert`] method.
+/// This can be provided via a [`crate::trust::sigstore::ManualTrustRoot`].
 ///
-/// > Note well: the [`tuf`](crate::tuf) module provides helper structs and methods
+/// > Note well: the [`trust::sigstore`](crate::trust::sigstore) module provides helper structs and methods
 /// > to obtain this data from the official TUF repository of the Sigstore project.
 ///
 /// ## Registry caching
@@ -50,63 +52,35 @@ use crate::registry::{Certificate, ClientConfig};
 ///
 /// Each cached entry will automatically expire after 60 seconds.
 #[derive(Default)]
-pub struct ClientBuilder {
+pub struct ClientBuilder<'a> {
     oci_client_config: ClientConfig,
-    rekor_pub_key: Option<String>,
-    fulcio_certs: Vec<Certificate>,
+    rekor_pub_key: Option<&'a [u8]>,
+    fulcio_certs: Vec<CertificateDer<'a>>,
     #[cfg(feature = "cached-client")]
     enable_registry_caching: bool,
 }
 
-impl ClientBuilder {
+impl<'a> ClientBuilder<'a> {
     /// Enable caching of data returned from remote OCI registries
     #[cfg(feature = "cached-client")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "cached-registry")))]
     pub fn enable_registry_caching(mut self) -> Self {
         self.enable_registry_caching = true;
         self
     }
 
-    /// Specify the public key used by Rekor.
+    /// Optional - Configures the roots of trust.
     ///
-    /// The public key can be obtained by using the helper methods under the
-    /// [`tuf`](crate::tuf) module.
-    ///
-    /// `key` is a PEM encoded public key
-    ///
-    /// When provided, this enables Rekor's integration.
-    pub fn with_rekor_pub_key(mut self, key: &str) -> Self {
-        self.rekor_pub_key = Some(key.to_string());
-        self
-    }
+    /// Enables Fulcio and Rekor integration with the given trust repository.
+    /// See [crate::trust::sigstore::TrustRoot] for more details on trust repositories.
+    pub fn with_trust_repository<R: TrustRoot + ?Sized>(mut self, repo: &'a R) -> Result<Self> {
+        let rekor_keys = repo.rekor_keys()?;
+        if !rekor_keys.is_empty() {
+            self.rekor_pub_key = Some(rekor_keys[0]);
+        }
+        self.fulcio_certs = repo.fulcio_certs()?;
 
-    /// Specify the certificate used by Fulcio. This method can be invoked
-    /// multiple times to add all the certificates that Fulcio used over the
-    /// time.
-    ///
-    /// `cert` is a PEM encoded certificate
-    ///
-    /// The certificates can be obtained by using the helper methods under the
-    /// [`tuf`](crate::tuf) module.
-    ///
-    /// When provided, this enables Fulcio's integration.
-    pub fn with_fulcio_cert(mut self, cert: &[u8]) -> Self {
-        let certificate = Certificate {
-            encoding: crate::registry::CertificateEncoding::Pem,
-            data: cert.to_owned(),
-        };
-        self.fulcio_certs.push(certificate);
-        self
-    }
-
-    /// Specify the certificates used by Fulcio.
-    ///
-    /// The certificates can be obtained by using the helper methods under the
-    /// [`tuf`](crate::tuf) module.
-    ///
-    /// When provided, this enables Fulcio's integration.
-    pub fn with_fulcio_certs(mut self, certs: &[crate::registry::Certificate]) -> Self {
-        self.fulcio_certs = certs.to_vec();
-        self
+        Ok(self)
     }
 
     /// Optional - the configuration to be used by the OCI client.
@@ -124,8 +98,8 @@ impl ClientBuilder {
                 info!("Rekor public key not provided. Rekor integration disabled");
                 None
             }
-            Some(data) => Some(CosignVerificationKey::from_pem(
-                data.as_bytes(),
+            Some(data) => Some(CosignVerificationKey::from_der(
+                data,
                 &SigningScheme::default(),
             )?),
         };
@@ -134,7 +108,7 @@ impl ClientBuilder {
             info!("No Fulcio cert has been provided. Fulcio integration disabled");
             None
         } else {
-            let cert_pool = CertificatePool::from_certificates(&self.fulcio_certs)?;
+            let cert_pool = CertificatePool::from_certificates(self.fulcio_certs, [])?;
             Some(cert_pool)
         };
 

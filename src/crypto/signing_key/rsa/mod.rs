@@ -78,7 +78,7 @@ pub enum DigestAlgorithm {
 /// RSA-based signing algorithm.
 /// * `PSS`: Probabilistic Signature Scheme, more secure than `PKCS1v15`.
 /// * `PKCS1v15`: also known as simply PKCS1, is a simple padding
-/// scheme developed for use with RSA keys.
+///   scheme developed for use with RSA keys.
 pub enum PaddingScheme {
     PSS,
     PKCS1v15,
@@ -141,15 +141,15 @@ impl RSASigner {
             },
             PaddingScheme::PKCS1v15 => match digest_algorithm {
                 DigestAlgorithm::Sha256 => RSASigner::RSA_PKCS1_SHA256(
-                    SigningKey::<sha2::Sha256>::new_with_prefix(private_key),
+                    SigningKey::<sha2::Sha256>::new(private_key),
                     rsa_keys.clone(),
                 ),
                 DigestAlgorithm::Sha384 => RSASigner::RSA_PKCS1_SHA384(
-                    SigningKey::<sha2::Sha384>::new_with_prefix(private_key),
+                    SigningKey::<sha2::Sha384>::new(private_key),
                     rsa_keys.clone(),
                 ),
                 DigestAlgorithm::Sha512 => RSASigner::RSA_PKCS1_SHA512(
-                    SigningKey::<sha2::Sha512>::new_with_prefix(private_key),
+                    SigningKey::<sha2::Sha512>::new(private_key),
                     rsa_keys.clone(),
                 ),
             },

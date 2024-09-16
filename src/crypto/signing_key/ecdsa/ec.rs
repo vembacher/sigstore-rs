@@ -26,6 +26,7 @@
 //! The [`ECDSAKeys`] has two enums due to their underlying elliptic curves, s.t.
 //! * `P256`
 //! * `P384`
+//!
 //! To have an uniform interface for all kinds of asymmetric keys, [`ECDSAKeys`]
 //! is also wrapped in [`super::super::SigStoreKeyPair`] enum.
 //!
@@ -63,7 +64,7 @@
 //! let signature = ec_signer.sign(b"some message");
 //! ```
 
-use std::{convert::TryFrom, marker::PhantomData, ops::Add};
+use std::{marker::PhantomData, ops::Add};
 
 use digest::{
     core_api::BlockSizeUser,
@@ -73,7 +74,10 @@ use digest::{
     },
     Digest, FixedOutput, FixedOutputReset,
 };
-use ecdsa::{hazmat::SignPrimitive, PrimeCurve, SignatureSize, SigningKey};
+use ecdsa::{
+    hazmat::{DigestPrimitive, SignPrimitive},
+    PrimeCurve, SignatureSize, SigningKey,
+};
 use elliptic_curve::{
     bigint::ArrayEncoding,
     generic_array::ArrayLength,
@@ -81,10 +85,9 @@ use elliptic_curve::{
     sec1::{FromEncodedPoint, ModulusSize, ToEncodedPoint},
     subtle::CtOption,
     zeroize::Zeroizing,
-    AffineArithmetic, AffinePoint, Curve, FieldSize, ProjectiveArithmetic, PublicKey, Scalar,
-    SecretKey,
+    AffinePoint, Curve, CurveArithmetic, FieldBytesSize, PublicKey, Scalar, SecretKey,
 };
-use pkcs8::{der::Encode, AssociatedOid, DecodePrivateKey, EncodePrivateKey, EncodePublicKey};
+use pkcs8::{AssociatedOid, DecodePrivateKey, EncodePrivateKey, EncodePublicKey};
 use signature::DigestSigner;
 
 use crate::{
@@ -110,7 +113,7 @@ use super::ECDSAKeys;
 #[derive(Clone, Debug)]
 pub struct EcdsaKeys<C>
 where
-    C: Curve + ProjectiveArithmetic + pkcs8::AssociatedOid,
+    C: Curve + CurveArithmetic + pkcs8::AssociatedOid,
 {
     ec_seckey: SecretKey<C>,
     public_key: PublicKey<C>,
@@ -118,9 +121,9 @@ where
 
 impl<C> EcdsaKeys<C>
 where
-    C: Curve + AssociatedOid + ProjectiveArithmetic + PrimeCurve,
+    C: Curve + AssociatedOid + CurveArithmetic + PrimeCurve,
     AffinePoint<C>: FromEncodedPoint<C> + ToEncodedPoint<C>,
-    FieldSize<C>: ModulusSize,
+    FieldBytesSize<C>: ModulusSize,
 {
     /// Create a new `EcdsaKeys` Object, the generic parameter indicates
     /// the elliptic curve. Please refer to
@@ -128,7 +131,7 @@ where
     /// The secret key (private key) will be randomly
     /// generated.
     pub fn new() -> Result<Self> {
-        let ec_seckey: SecretKey<C> = SecretKey::random(rand::rngs::OsRng);
+        let ec_seckey: SecretKey<C> = SecretKey::random(&mut rand::rngs::OsRng);
 
         let public_key = ec_seckey.public_key();
         Ok(EcdsaKeys {
@@ -142,14 +145,20 @@ where
     /// [`SIGSTORE_PRIVATE_KEY_PEM_LABEL`].
     pub fn from_encrypted_pem(private_key: &[u8], password: &[u8]) -> Result<Self> {
         let key = pem::parse(private_key)?;
-        match &key.tag[..] {
+        match key.tag() {
             COSIGN_PRIVATE_KEY_PEM_LABEL | SIGSTORE_PRIVATE_KEY_PEM_LABEL => {
-                let der = kdf::decrypt(&key.contents, password)?;
+                let der = kdf::decrypt(key.contents(), password)?;
                 let pkcs8 = pkcs8::PrivateKeyInfo::try_from(&der[..]).map_err(|e| {
                     SigstoreError::PKCS8Error(format!("Read PrivateKeyInfo failed: {e}"))
                 })?;
                 let ec_seckey = SecretKey::<C>::from_sec1_der(pkcs8.private_key)?;
                 Self::from_private_key(ec_seckey)
+            }
+            PRIVATE_KEY_PEM_LABEL if password.is_empty() => Self::from_pem(private_key),
+            PRIVATE_KEY_PEM_LABEL if !password.is_empty() => {
+                Err(SigstoreError::PrivateKeyDecryptError(
+                    "Unencrypted private key but password provided".into(),
+                ))
             }
             tag => Err(SigstoreError::PrivateKeyDecryptError(format!(
                 "Unsupported pem tag {tag}"
@@ -207,9 +216,9 @@ where
 
 impl<C> KeyPair for EcdsaKeys<C>
 where
-    C: Curve + AssociatedOid + ProjectiveArithmetic + PrimeCurve,
+    C: Curve + AssociatedOid + CurveArithmetic + PrimeCurve,
     AffinePoint<C>: FromEncodedPoint<C> + ToEncodedPoint<C>,
-    FieldSize<C>: ModulusSize,
+    FieldBytesSize<C>: ModulusSize,
 {
     /// Return the public key in PEM-encoded SPKI format.
     fn public_key_to_pem(&self) -> Result<String> {
@@ -246,18 +255,10 @@ where
     /// Return the encrypted private key in PEM-encoded format.
     fn private_key_to_encrypted_pem(&self, password: &[u8]) -> Result<Zeroizing<String>> {
         let der = self.private_key_to_der()?;
-        let pem = match password.len() {
-            0 => pem::Pem {
-                tag: PRIVATE_KEY_PEM_LABEL.to_string(),
-                contents: der
-                    .to_vec()
-                    .map_err(|e| SigstoreError::PKCS8DerError(e.to_string()))?,
-            },
-            _ => pem::Pem {
-                tag: SIGSTORE_PRIVATE_KEY_PEM_LABEL.to_string(),
-                contents: kdf::encrypt(&der, password)?,
-            },
-        };
+        let pem = pem::Pem::new(
+            SIGSTORE_PRIVATE_KEY_PEM_LABEL,
+            kdf::encrypt(&der, password)?,
+        );
         let pem = pem::encode(&pem);
         Ok(zeroize::Zeroizing::new(pem))
     }
@@ -285,11 +286,11 @@ where
 #[derive(Clone, Debug)]
 pub struct EcdsaSigner<C, D>
 where
-    C: PrimeCurve + ProjectiveArithmetic + AssociatedOid,
-    Scalar<C>: Invert<Output = CtOption<Scalar<C>>> + Reduce<C::UInt> + SignPrimitive<C>,
-    C::UInt: for<'a> From<&'a Scalar<C>>,
+    C: PrimeCurve + CurveArithmetic + AssociatedOid,
+    Scalar<C>: Invert<Output = CtOption<Scalar<C>>> + Reduce<C::Uint> + SignPrimitive<C>,
+    C::Uint: for<'a> From<&'a Scalar<C>>,
     SignatureSize<C>: ArrayLength<u8>,
-    D: Digest + BlockSizeUser + FixedOutput<OutputSize = FieldSize<C>> + FixedOutputReset,
+    D: Digest + BlockSizeUser + FixedOutput<OutputSize = FieldBytesSize<C>> + FixedOutputReset,
 {
     signing_key: SigningKey<C>,
     ecdsa_keys: EcdsaKeys<C>,
@@ -298,13 +299,13 @@ where
 
 impl<C, D> EcdsaSigner<C, D>
 where
-    C: PrimeCurve + ProjectiveArithmetic + AssociatedOid,
-    Scalar<C>: Invert<Output = CtOption<Scalar<C>>> + Reduce<C::UInt> + SignPrimitive<C>,
+    C: PrimeCurve + CurveArithmetic + AssociatedOid,
+    Scalar<C>: Invert<Output = CtOption<Scalar<C>>> + Reduce<C::Uint> + SignPrimitive<C>,
     AffinePoint<C>: FromEncodedPoint<C> + ToEncodedPoint<C>,
-    FieldSize<C>: ModulusSize,
-    C::UInt: for<'a> From<&'a Scalar<C>>,
+    FieldBytesSize<C>: ModulusSize,
+    C::Uint: for<'a> From<&'a Scalar<C>>,
     SignatureSize<C>: ArrayLength<u8>,
-    D: Digest + BlockSizeUser + FixedOutput<OutputSize = FieldSize<C>> + FixedOutputReset,
+    D: Digest + BlockSizeUser + FixedOutput<OutputSize = FieldBytesSize<C>> + FixedOutputReset,
 {
     /// Create a new `EcdsaSigner` from the given `EcdsaKeys` and `SignatureDigestAlgorithm`
     pub fn from_ecdsa_keys(ecdsa_keys: &EcdsaKeys<C>) -> Result<Self> {
@@ -332,20 +333,21 @@ where
 
 impl<C, D> Signer for EcdsaSigner<C, D>
 where
-    C: PrimeCurve + ProjectiveArithmetic + AssociatedOid,
-    Scalar<C>: Invert<Output = CtOption<Scalar<C>>> + Reduce<C::UInt> + SignPrimitive<C>,
+    C: PrimeCurve + CurveArithmetic + AssociatedOid + DigestPrimitive,
+    Scalar<C>: Invert<Output = CtOption<Scalar<C>>> + Reduce<C::Uint> + SignPrimitive<C>,
     SigningKey<C>: ecdsa::signature::Signer<ecdsa::Signature<C>>,
-    C::UInt: for<'a> From<&'a Scalar<C>>,
-    <<<C as Curve>::UInt as ArrayEncoding>::ByteSize as Add>::Output:
+    C::Uint: for<'a> From<&'a Scalar<C>>,
+    <<C as Curve>::FieldBytesSize as Add>::Output:
         Add<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B1>>,
-    <<<<C as Curve>::UInt as ArrayEncoding>::ByteSize as Add>::Output as Add<
+    <<<C as Curve>::FieldBytesSize as Add>::Output as Add<
         UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B1>,
     >>::Output: ArrayLength<u8>,
     SignatureSize<C>: ArrayLength<u8>,
-    <<C as Curve>::UInt as ArrayEncoding>::ByteSize: ModulusSize,
-    <C as AffineArithmetic>::AffinePoint: ToEncodedPoint<C>,
-    <C as AffineArithmetic>::AffinePoint: FromEncodedPoint<C>,
-    D: Digest + BlockSizeUser + FixedOutput<OutputSize = FieldSize<C>> + FixedOutputReset,
+    <<C as Curve>::Uint as ArrayEncoding>::ByteSize: ModulusSize,
+    <C as Curve>::FieldBytesSize: ModulusSize,
+    <C as CurveArithmetic>::AffinePoint: ToEncodedPoint<C>,
+    <C as CurveArithmetic>::AffinePoint: FromEncodedPoint<C>,
+    D: Digest + BlockSizeUser + FixedOutput<OutputSize = FieldBytesSize<C>> + FixedOutputReset,
 {
     /// Sign the given message, and generate a signature.
     /// The message will firstly be hashed with the given
@@ -356,9 +358,9 @@ where
     fn sign(&self, msg: &[u8]) -> Result<Vec<u8>> {
         let mut hasher = D::new();
         digest::Digest::update(&mut hasher, msg);
-        let sig = self.signing_key.try_sign_digest(hasher)?.to_der();
+        let (sig, _recovery_id) = self.signing_key.try_sign_digest(hasher)?;
 
-        Ok(sig.as_bytes().to_vec())
+        Ok(sig.to_der().to_bytes().to_vec())
     }
 
     /// Return the ref to the keypair inside the signer
@@ -371,6 +373,8 @@ where
 mod tests {
     use std::fs;
 
+    use rstest::rstest;
+
     use crate::crypto::{
         signing_key::{tests::MESSAGE, KeyPair, Signer},
         verification_key::CosignVerificationKey,
@@ -380,6 +384,7 @@ mod tests {
     use super::{EcdsaKeys, EcdsaSigner};
 
     const PASSWORD: &[u8] = b"123";
+    const EMPTY_PASSWORD: &[u8] = b"";
 
     /// This test will try to read an unencrypted ecdsa
     /// private key file, which is generated by `sigstore`.
@@ -396,11 +401,16 @@ mod tests {
 
     /// This test will try to read an encrypted ecdsa
     /// private key file, which is generated by `sigstore`.
-    #[test]
-    fn ecdsa_from_encrypted_pem() {
-        let content = fs::read("tests/data/keys/ecdsa_encrypted_private.key")
-            .expect("read tests/data/keys/ecdsa_encrypted_private.key failed.");
-        let key = EcdsaKeys::<p256::NistP256>::from_encrypted_pem(&content, PASSWORD);
+    #[rstest]
+    #[case("tests/data/keys/ecdsa_encrypted_private.key", PASSWORD)]
+    #[case::empty_password(
+        "tests/data/keys/cosign_generated_encrypted_empty_private.key",
+        EMPTY_PASSWORD
+    )]
+    #[case::empty_password_unencrypted("tests/data/keys/ecdsa_private.key", EMPTY_PASSWORD)]
+    fn ecdsa_from_encrypted_pem(#[case] keypath: &str, #[case] password: &[u8]) {
+        let content = fs::read(keypath).expect("read key failed.");
+        let key = EcdsaKeys::<p256::NistP256>::from_encrypted_pem(&content, password);
         assert!(
             key.is_ok(),
             "can not create EcdsaKeys from encrypted PEM file"
@@ -409,14 +419,31 @@ mod tests {
 
     /// This test will try to encrypt a ecdsa keypair and
     /// return the pem-encoded contents.
-    #[test]
-    fn ecdsa_to_encrypted_pem() {
+    #[rstest]
+    #[case(PASSWORD)]
+    #[case::empty_password(EMPTY_PASSWORD)]
+    fn ecdsa_to_encrypted_pem(#[case] password: &[u8]) {
         let key =
             EcdsaKeys::<p256::NistP256>::new().expect("create ecdsa keys with P256 curve failed.");
-        let key = key.private_key_to_encrypted_pem(PASSWORD);
+        let key = key.private_key_to_encrypted_pem(password);
         assert!(
             key.is_ok(),
             "can not export private key in encrypted PEM format."
+        );
+    }
+
+    /// This test will ensure that an unencrypted
+    /// keypair will fail to read if a non-empty
+    /// password is given.
+    #[test]
+    fn ecdsa_error_unencrypted_pem_password() {
+        let content = fs::read("tests/data/keys/ecdsa_private.key").expect("read key failed.");
+        let key = EcdsaKeys::<p256::NistP256>::from_encrypted_pem(&content, PASSWORD);
+        assert!(
+            key.is_err_and(|e| e
+                .to_string()
+                .contains("Unencrypted private key but password provided")),
+            "read unencrypted key with password"
         );
     }
 
@@ -431,6 +458,22 @@ mod tests {
             .private_key_to_pem()
             .expect("export private key to PEM format failed.");
         let key = EcdsaKeys::<p256::NistP256>::from_pem(key.as_bytes());
+        assert!(key.is_ok(), "can not create EcdsaKeys from PEM string.");
+    }
+
+    /// This test will generate a EcdsaKeys, encode the private key
+    /// it into pem, and decode a new key from the generated pem-encoded
+    /// private key.
+    #[rstest]
+    #[case(PASSWORD)]
+    #[case::empty_password(EMPTY_PASSWORD)]
+    fn ecdsa_to_and_from_encrypted_pem(#[case] password: &[u8]) {
+        let key =
+            EcdsaKeys::<p256::NistP256>::new().expect("create ecdsa keys with P256 curve failed.");
+        let key = key
+            .private_key_to_encrypted_pem(password)
+            .expect("export private key to PEM format failed.");
+        let key = EcdsaKeys::<p256::NistP256>::from_encrypted_pem(key.as_bytes(), password);
         assert!(key.is_ok(), "can not create EcdsaKeys from PEM string.");
     }
 
@@ -485,7 +528,7 @@ mod tests {
     /// This test will do the following things:
     /// * Generate a ecdsa-P256 keypair.
     /// * Sign the MESSAGE with the private key and digest algorithm SHA256,
-    /// then generate a signature.
+    ///   then generate a signature.
     /// * Verify the signature using the public key.
     #[test]
     fn ecdsa_sign_and_verify() {

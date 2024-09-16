@@ -48,7 +48,6 @@ use crate::crypto::{CosignVerificationKey, Signature};
 use crate::errors::SigstoreError;
 use base64::{engine::general_purpose::STANDARD as BASE64_STD_ENGINE, Engine as _};
 use pkcs8::der::Decode;
-use std::convert::TryFrom;
 use x509_cert::Certificate;
 
 pub mod bundle;
@@ -72,7 +71,9 @@ use crate::registry::oci_reference::OciReference;
 pub use payload::simple_signing;
 
 pub mod constraint;
-#[async_trait(?Send)]
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 /// Cosign Abilities that have to be implemented by a
 /// Cosign client
 pub trait CosignCapabilities {
@@ -101,12 +102,13 @@ pub trait CosignCapabilities {
     /// must be satisfied:
     ///
     /// * The [`sigstore::cosign::Client`](crate::cosign::client::Client) must
-    ///   have been created with Rekor integration enabled (see
-    ///   [`sigstore::cosign::ClientBuilder::with_rekor_pub_key`](crate::cosign::ClientBuilder::with_rekor_pub_key))
+    ///   have been created with Rekor integration enabled (see [`crate::trust::sigstore::ManualTrustRoot`])
     /// * The [`sigstore::cosign::Client`](crate::cosign::client::Client) must
-    ///   have been created with Fulcio integration enabled (see
-    ///   [`sigstore::cosign::ClientBuilder::with_fulcio_certs`](crate::cosign::ClientBuilder::with_fulcio_certs))
+    ///   have been created with Fulcio integration enabled (see [`crate::trust::sigstore::ManualTrustRoot])
     /// * The layer must include a bundle produced by Rekor
+    ///
+    /// > Note well: the [`trust::sigstore`](crate::trust::sigstore) module provides helper structs and methods
+    /// > to obtain this data from the official TUF repository of the Sigstore project.
     ///
     /// When the embedded certificate cannot be verified, [`SignatureLayer::certificate_signature`]
     /// is going to be `None`.
@@ -167,7 +169,7 @@ pub trait CosignCapabilities {
             .and_then(|decoded| pem::parse(decoded).map_err(SigstoreError::from))
             .or_else(|_| pem::parse(cert).map_err(SigstoreError::from))?;
 
-        let cert = Certificate::from_der(&pem.contents).map_err(|e| {
+        let cert = Certificate::from_der(pem.contents()).map_err(|e| {
             SigstoreError::PKCS8SpkiError(format!("parse der into cert failed: {e}"))
         })?;
         let spki = cert.tbs_certificate.subject_public_key_info;
@@ -204,7 +206,7 @@ pub trait CosignCapabilities {
 /// verification.
 ///
 /// Returns a `Result` with either `Ok()` for passed verification or
-/// [`SigstoreVerifyConstraintsError`](crate::errors::SigstoreVerifyConstraintsError),
+/// [`SigstoreVerifyConstraintsError`]
 /// which contains a vector of references to unsatisfied constraints.
 ///
 /// See the documentation of the [`cosign::verification_constraint`](crate::cosign::verification_constraint) module for more
@@ -254,10 +256,10 @@ where
 /// passes applying constraints process.
 ///
 /// Returns a `Result` with either `Ok()` for success or
-/// [`SigstoreApplicationConstraintsError`](crate::errors::SigstoreApplicationConstraintsError),
+/// [`SigstoreApplicationConstraintsError`]
 /// which contains a vector of references to unapplied constraints.
 ///
-/// See the documentation of the [`cosign::sign_constraint`](crate::cosign::sign_constraint) module for more
+/// See the documentation of the [`cosign::constraint`](crate::cosign::constraint) module for more
 /// details about how to define constraints.
 pub fn apply_constraints<'a, 'b, I>(
     signature_layer: &'a mut SignatureLayer,
@@ -288,7 +290,7 @@ where
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use std::collections::HashMap;
+    use webpki::types::CertificateDer;
 
     use super::constraint::{AnnotationMarker, PrivateKeySigner};
     use super::*;
@@ -299,14 +301,10 @@ mod tests {
         AnnotationVerifier, CertSubjectEmailVerifier, VerificationConstraintVec,
     };
     use crate::crypto::certificate_pool::CertificatePool;
-    use crate::crypto::{CosignVerificationKey, SigningScheme};
+    use crate::crypto::SigningScheme;
 
     #[cfg(feature = "test-registry")]
-    use testcontainers::{
-        clients,
-        core::WaitFor,
-        images::{self, generic::GenericImage},
-    };
+    use testcontainers::{core::WaitFor, runners::AsyncRunner};
 
     pub(crate) const REKOR_PUB_KEY: &str = r#"-----BEGIN PUBLIC KEY-----
 MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2G2Y+2tabdTV5BcGiBIx0a9fAFwr
@@ -345,17 +343,14 @@ TNMea7Ix/stJ5TfcLLeABLE4BNJOsQ4vnBHJ
     const SIGNED_IMAGE: &str = "busybox:1.34";
 
     pub(crate) fn get_fulcio_cert_pool() -> CertificatePool {
-        let certificates = vec![
-            crate::registry::Certificate {
-                encoding: crate::registry::CertificateEncoding::Pem,
-                data: FULCIO_CRT_1_PEM.as_bytes().to_vec(),
-            },
-            crate::registry::Certificate {
-                encoding: crate::registry::CertificateEncoding::Pem,
-                data: FULCIO_CRT_2_PEM.as_bytes().to_vec(),
-            },
-        ];
-        CertificatePool::from_certificates(&certificates).unwrap()
+        fn pem_to_der<'a>(input: &'a str) -> CertificateDer<'a> {
+            let pem_cert = pem::parse(input).unwrap();
+            assert_eq!(pem_cert.tag(), "CERTIFICATE");
+            CertificateDer::from(pem_cert.into_contents())
+        }
+        let certificates = vec![pem_to_der(FULCIO_CRT_1_PEM), pem_to_der(FULCIO_CRT_2_PEM)];
+
+        CertificatePool::from_certificates(certificates, []).unwrap()
     }
 
     pub(crate) fn get_rekor_public_key() -> CosignVerificationKey {
@@ -578,10 +573,14 @@ TNMea7Ix/stJ5TfcLLeABLE4BNJOsQ4vnBHJ
     #[tokio::test]
     #[serial_test::serial]
     async fn sign_verify_image(#[case] signing_scheme: SigningScheme) {
-        let docker = clients::Cli::default();
-        let image = registry_image();
-        let test_container = docker.run(image);
-        let port = test_container.get_host_port_ipv4(5000);
+        let test_container = registry_image()
+            .start()
+            .await
+            .expect("failed to start registry");
+        let port = test_container
+            .get_host_port_ipv4(5000)
+            .await
+            .expect("failed to get port");
 
         let mut client = ClientBuilder::default()
             .enable_registry_caching()
@@ -679,8 +678,8 @@ TNMea7Ix/stJ5TfcLLeABLE4BNJOsQ4vnBHJ
     }
 
     #[cfg(feature = "test-registry")]
-    fn registry_image() -> GenericImage {
-        images::generic::GenericImage::new("docker.io/library/registry", "2")
+    fn registry_image() -> testcontainers::GenericImage {
+        testcontainers::GenericImage::new("docker.io/library/registry", "2")
             .with_wait_for(WaitFor::message_on_stderr("listening on "))
     }
 }

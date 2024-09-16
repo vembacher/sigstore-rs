@@ -22,9 +22,7 @@ use sigstore::cosign::{CosignCapabilities, SignatureLayer};
 use sigstore::crypto::SigningScheme;
 use sigstore::errors::SigstoreVerifyConstraintsError;
 use sigstore::registry::{ClientConfig, ClientProtocol, OciReference};
-use sigstore::tuf::SigstoreRepository;
-use std::boxed::Box;
-use std::convert::TryFrom;
+use sigstore::trust::sigstore::SigstoreTrustRoot;
 use std::time::Instant;
 
 extern crate anyhow;
@@ -34,7 +32,6 @@ extern crate clap;
 use clap::Parser;
 
 use std::{collections::HashMap, fs};
-use tokio::task::spawn_blocking;
 
 extern crate tracing_subscriber;
 use tracing::{info, warn};
@@ -66,11 +63,11 @@ struct Cli {
 
     /// File containing Rekor's public key (e.g.: ~/.sigstore/root/targets/rekor.pub)
     #[clap(long, required(false))]
-    rekor_pub_key: Option<String>,
+    rekor_pub_keys: Vec<String>,
 
     /// File containing Fulcio's certificate (e.g.: ~/.sigstore/root/targets/fulcio.crt.pem)
     #[clap(long, required(false))]
-    fulcio_cert: Option<String>,
+    fulcio_certs: Vec<String>,
 
     /// The issuer of the OIDC token used by the user to authenticate against Fulcio
     #[clap(long, required(false))]
@@ -110,7 +107,7 @@ struct Cli {
 
 async fn run_app(
     cli: &Cli,
-    frd: &FulcioAndRekorData,
+    frd: &dyn sigstore::trust::TrustRoot,
 ) -> anyhow::Result<(Vec<SignatureLayer>, VerificationConstraintVec)> {
     // Note well: this a limitation deliberately introduced by this example.
     if cli.cert_email.is_some() && cli.cert_url.is_some() {
@@ -133,19 +130,12 @@ async fn run_app(
 
     let mut client_builder =
         sigstore::cosign::ClientBuilder::default().with_oci_client_config(oci_client_config);
-
-    if let Some(key) = frd.rekor_pub_key.as_ref() {
-        client_builder = client_builder.with_rekor_pub_key(key);
-    }
+    client_builder = client_builder.with_trust_repository(frd)?;
 
     let cert_chain: Option<Vec<sigstore::registry::Certificate>> = match cli.cert_chain.as_ref() {
         None => None,
-        Some(cert_chain_path) => Some(parse_cert_bundle(&cert_chain_path)?),
+        Some(cert_chain_path) => Some(parse_cert_bundle(cert_chain_path)?),
     };
-
-    if !frd.fulcio_certs.is_empty() {
-        client_builder = client_builder.with_fulcio_certs(&frd.fulcio_certs);
-    }
 
     if cli.enable_registry_caching {
         client_builder = client_builder.enable_registry_caching();
@@ -194,19 +184,16 @@ async fn run_app(
     }
     if let Some(path_to_cert) = cli.cert.as_ref() {
         let cert = fs::read(path_to_cert).map_err(|e| anyhow!("Cannot read cert: {:?}", e))?;
-        let require_rekor_bundle = if frd.rekor_pub_key.is_some() {
+        let require_rekor_bundle = if !frd.rekor_keys()?.is_empty() {
             true
         } else {
             warn!("certificate based verification is weaker when Rekor integration is disabled");
             false
         };
 
-        let verifier = CertificateVerifier::from_pem(
-            &cert,
-            require_rekor_bundle,
-            cert_chain.as_ref().map(|v| v.as_slice()),
-        )
-        .map_err(|e| anyhow!("Cannot create certificate verifier: {}", e))?;
+        let verifier =
+            CertificateVerifier::from_pem(&cert, require_rekor_bundle, cert_chain.as_deref())
+                .map_err(|e| anyhow!("Cannot create certificate verifier: {}", e))?;
 
         verification_constraints.push(Box::new(verifier));
     }
@@ -238,36 +225,24 @@ async fn run_app(
     Ok((trusted_layers, verification_constraints))
 }
 
-#[derive(Default)]
-struct FulcioAndRekorData {
-    pub rekor_pub_key: Option<String>,
-    pub fulcio_certs: Vec<sigstore::registry::Certificate>,
-}
-
-async fn fulcio_and_rekor_data(cli: &Cli) -> anyhow::Result<FulcioAndRekorData> {
-    let mut data = FulcioAndRekorData::default();
-
+async fn fulcio_and_rekor_data(cli: &Cli) -> anyhow::Result<Box<dyn sigstore::trust::TrustRoot>> {
     if cli.use_sigstore_tuf_data {
-        let repo: sigstore::errors::Result<SigstoreRepository> = spawn_blocking(|| {
-            info!("Downloading data from Sigstore TUF repository");
-            sigstore::tuf::SigstoreRepository::fetch(None)
-        })
-        .await
-        .map_err(|e| anyhow!("Error spawning blocking task inside of tokio: {}", e))?;
+        info!("Downloading data from Sigstore TUF repository");
 
-        let repo: SigstoreRepository = repo?;
-        data.fulcio_certs = repo.fulcio_certs().into();
-        data.rekor_pub_key = Some(repo.rekor_pub_key().to_string());
+        let repo: sigstore::errors::Result<SigstoreTrustRoot> = SigstoreTrustRoot::new(None).await;
+
+        return Ok(Box::new(repo?));
     };
 
-    if let Some(path) = cli.rekor_pub_key.as_ref() {
-        data.rekor_pub_key = Some(
-            fs::read_to_string(path)
+    let mut data = sigstore::trust::ManualTrustRoot::default();
+    for path in cli.rekor_pub_keys.iter() {
+        data.rekor_keys.push(
+            fs::read(path)
                 .map_err(|e| anyhow!("Error reading rekor public key from disk: {}", e))?,
         );
     }
 
-    if let Some(path) = cli.fulcio_cert.as_ref() {
+    for path in cli.fulcio_certs.iter() {
         let cert_data = fs::read(path)
             .map_err(|e| anyhow!("Error reading fulcio certificate from disk: {}", e))?;
 
@@ -275,10 +250,10 @@ async fn fulcio_and_rekor_data(cli: &Cli) -> anyhow::Result<FulcioAndRekorData> 
             encoding: sigstore::registry::CertificateEncoding::Pem,
             data: cert_data,
         };
-        data.fulcio_certs.push(certificate);
+        data.fulcio_certs.push(certificate.try_into()?);
     }
 
-    Ok(data)
+    Ok(Box::new(data))
 }
 
 #[tokio::main]
@@ -307,7 +282,7 @@ pub async fn main() {
             println!("Loop {}/{}", n + 1, cli.loops);
         }
 
-        match run_app(&cli, &frd).await {
+        match run_app(&cli, frd.as_ref()).await {
             Ok((trusted_layers, verification_constraints)) => {
                 let filter_result = sigstore::cosign::verify_constraints(
                     &trusted_layers,
@@ -343,13 +318,13 @@ pub async fn main() {
 fn parse_cert_bundle(bundle_path: &str) -> Result<Vec<sigstore::registry::Certificate>> {
     let data =
         fs::read(bundle_path).map_err(|e| anyhow!("Error reading {}: {}", bundle_path, e))?;
-    let pems = pem::parse_many(&data)?;
+    let pems = pem::parse_many(data)?;
 
     Ok(pems
         .iter()
         .map(|pem| sigstore::registry::Certificate {
             encoding: sigstore::registry::CertificateEncoding::Der,
-            data: pem.contents.clone(),
+            data: pem.contents().to_vec(),
         })
         .collect())
 }

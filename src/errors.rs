@@ -23,6 +23,7 @@ use crate::cosign::{
 };
 
 #[cfg(feature = "cosign")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cosign")))]
 #[derive(Error, Debug)]
 #[error("Several Signature Layers failed verification")]
 pub struct SigstoreVerifyConstraintsError<'a> {
@@ -30,6 +31,7 @@ pub struct SigstoreVerifyConstraintsError<'a> {
 }
 
 #[cfg(feature = "cosign")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cosign")))]
 #[derive(Error, Debug)]
 #[error("Several Constraints failed to apply on the SignatureLayer")]
 pub struct SigstoreApplicationConstraintsError<'a> {
@@ -52,6 +54,9 @@ pub enum SigstoreError {
     #[error("invalid key format: {error}")]
     InvalidKeyFormat { error: String },
 
+    #[error("Unable to parse identity token: {0}")]
+    IdentityTokenError(String),
+
     #[error("unmatched key type {key_typ} and signing scheme {scheme}")]
     UnmatchedKeyAndSigningScheme { key_typ: String, scheme: String },
 
@@ -62,9 +67,6 @@ pub enum SigstoreError {
     FromPEMError(#[from] pem::PemError),
 
     #[error(transparent)]
-    CertError(#[from] picky::x509::certificate::CertError),
-
-    #[error(transparent)]
     Base64DecodeError(#[from] base64::DecodeError),
 
     #[error("Public key with unsupported algorithm: {0}")]
@@ -72,6 +74,9 @@ pub enum SigstoreError {
 
     #[error("Public key verification error")]
     PublicKeyVerificationError,
+
+    #[error("X.509 certificate version is not V3")]
+    CertificateUnsupportedVersionError,
 
     #[error("Certificate validity check failed: cannot be used before {0}")]
     CertificateValidityError(String),
@@ -106,6 +111,12 @@ pub enum SigstoreError {
     #[error("Certificate pool error: {0}")]
     CertificatePoolError(String),
 
+    #[error("Signing session expired")]
+    ExpiredSigningSession(),
+
+    #[error("Fulcio request unsuccessful: {0}")]
+    FulcioClientError(String),
+
     #[error("Cannot fetch manifest of {image}: {error}")]
     RegistryFetchManifestError { image: String, error: String },
 
@@ -118,8 +129,31 @@ pub enum SigstoreError {
     #[error("Cannot push {image}: {error}")]
     RegistryPushError { image: String, error: String },
 
+    #[error("Rekor request unsuccessful: {0}")]
+    RekorClientError(String),
+
+    #[error(transparent)]
+    JoinError(#[from] tokio::task::JoinError),
+
+    #[cfg(feature = "cert")]
+    #[error(transparent)]
+    KeyringError(#[from] crate::crypto::keyring::KeyringError),
+
+    #[cfg(any(feature = "sign", feature = "verify"))]
+    #[error(transparent)]
+    SCTError(#[from] crate::crypto::transparency::SCTError),
+
+    // HACK(tnytown): Remove when we rework the Fulcio V2 endpoint.
+    #[cfg(feature = "fulcio")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "fulcio")))]
+    #[error(transparent)]
+    ReqwestError(#[from] reqwest::Error),
+
     #[error("OCI reference not valid: {reference}")]
     OciReferenceNotValidError { reference: String },
+
+    #[error("Sigstore bundle malformed: {0}")]
+    SigstoreBundleMalformedError(String),
 
     #[error("Layer doesn't have Sigstore media type")]
     SigstoreMediaTypeNotFoundError,
@@ -139,12 +173,16 @@ pub enum SigstoreError {
     #[error("No Signature Layer passed verification")]
     SigstoreNoVerifiedLayer,
 
-    #[cfg(feature = "tuf")]
+    #[cfg(feature = "sigstore-trust-root")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "sigstore-trust-root")))]
     #[error(transparent)]
     TufError(#[from] Box<tough::error::Error>),
 
     #[error("TUF target {0} not found inside of repository")]
     TufTargetNotFoundError(String),
+
+    #[error("{0}")]
+    TufMetadataError(String),
 
     #[error(transparent)]
     IOError(#[from] std::io::Error),
@@ -154,6 +192,9 @@ pub enum SigstoreError {
 
     #[error("{0}")]
     VerificationConstraintError(String),
+
+    #[error("{0}")]
+    VerificationMaterialError(String),
 
     #[error("{0}")]
     ApplyConstraintError(String),
@@ -200,6 +241,9 @@ pub enum SigstoreError {
     #[error(transparent)]
     Utf8Error(#[from] std::str::Utf8Error),
 
+    #[error(transparent)]
+    WebPKIError(#[from] webpki::Error),
+
     #[error("Failed to parse the key: {0}")]
     KeyParseError(String),
 
@@ -210,5 +254,11 @@ pub enum SigstoreError {
     PKCS1Error(#[from] pkcs1::Error),
 
     #[error(transparent)]
-    ED25519PKCS1Error(#[from] ed25519_dalek::pkcs8::spki::Error),
+    Ed25519PKCS8Error(#[from] ed25519_dalek::pkcs8::spki::Error),
+
+    #[error(transparent)]
+    X509ParseError(#[from] x509_cert::der::Error),
+
+    #[error(transparent)]
+    X509BuilderError(#[from] x509_cert::builder::Error),
 }

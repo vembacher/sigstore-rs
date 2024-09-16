@@ -1,7 +1,7 @@
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use pkcs8::der::Decode;
-use std::convert::TryFrom;
 use tracing::warn;
+use webpki::types::CertificateDer;
 use x509_cert::Certificate;
 
 use super::VerificationConstraint;
@@ -35,7 +35,7 @@ impl CertificateVerifier {
         cert_chain: Option<&[crate::registry::Certificate]>,
     ) -> Result<Self> {
         let pem = pem::parse(cert_bytes)?;
-        Self::from_der(&pem.contents, require_rekor_bundle, cert_chain)
+        Self::from_der(pem.contents(), require_rekor_bundle, cert_chain)
     }
 
     /// Create a new instance of `CertificateVerifier` using the DER encoded
@@ -61,8 +61,12 @@ impl CertificateVerifier {
         crate::crypto::certificate::verify_validity(&cert)?;
 
         if let Some(certs) = cert_chain {
-            let cert_pool = CertificatePool::from_certificates(certs)?;
-            cert_pool.verify_der_cert(cert_bytes)?;
+            let certs = certs
+                .iter()
+                .map(|c| CertificateDer::try_from(c.clone()))
+                .collect::<Result<Vec<_>>>()?;
+            let cert_pool = CertificatePool::from_certificates(certs, [])?;
+            cert_pool.verify_der_cert(cert_bytes, None)?;
         }
 
         let subject_public_key_info = &cert.tbs_certificate.subject_public_key_info;
@@ -83,10 +87,12 @@ impl VerificationConstraint for CertificateVerifier {
         }
         match &signature_layer.bundle {
             Some(bundle) => {
-                let it = DateTime::<Utc>::from_utc(
-                    NaiveDateTime::from_timestamp_opt(bundle.payload.integrated_time, 0).ok_or(
-                        SigstoreError::UnexpectedError("timestamp is not legal".into()),
-                    )?,
+                let it = DateTime::<Utc>::from_naive_utc_and_offset(
+                    DateTime::from_timestamp(bundle.payload.integrated_time, 0)
+                        .ok_or(SigstoreError::UnexpectedError(
+                            "timestamp is not legal".into(),
+                        ))?
+                        .naive_utc(),
                     Utc,
                 );
                 let not_before: DateTime<Utc> =

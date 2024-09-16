@@ -17,7 +17,9 @@
 
 use serde::Serialize;
 use std::cmp::Ordering;
-use std::convert::From;
+use webpki::types::CertificateDer;
+
+use crate::errors;
 
 /// A method for authenticating to a registry
 #[derive(Serialize, Debug)]
@@ -123,6 +125,21 @@ impl From<&Certificate> for oci_distribution::client::Certificate {
     }
 }
 
+impl<'a> TryFrom<Certificate> for CertificateDer<'a> {
+    type Error = errors::SigstoreError;
+    fn try_from(value: Certificate) -> errors::Result<CertificateDer<'a>> {
+        #[inline]
+        fn to_der(pem: &[u8]) -> errors::Result<Vec<u8>> {
+            Ok(pem::parse(pem)?.into_contents())
+        }
+
+        match &value.encoding {
+            CertificateEncoding::Der => Ok(CertificateDer::from(value.data)),
+            CertificateEncoding::Pem => Ok(CertificateDer::from(to_der(&value.data)?)),
+        }
+    }
+}
+
 /// A client configuration
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
@@ -130,7 +147,8 @@ pub struct ClientConfig {
     pub protocol: ClientProtocol,
 
     /// Accept invalid hostname. Defaults to false
-    #[cfg(feature = "native-tls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "full-native-tls")))]
+    #[cfg(feature = "full-native-tls")]
     pub accept_invalid_hostnames: bool,
 
     /// Accept invalid certificates. Defaults to false
@@ -145,7 +163,7 @@ impl Default for ClientConfig {
     fn default() -> Self {
         ClientConfig {
             protocol: ClientProtocol::Https,
-            #[cfg(feature = "native-tls")]
+            #[cfg(feature = "full-native-tls")]
             accept_invalid_hostnames: false,
             accept_invalid_certificates: false,
             extra_root_certificates: Vec::new(),
@@ -158,7 +176,7 @@ impl From<ClientConfig> for oci_distribution::client::ClientConfig {
         oci_distribution::client::ClientConfig {
             protocol: config.protocol.into(),
             accept_invalid_certificates: config.accept_invalid_certificates,
-            #[cfg(feature = "native-tls")]
+            #[cfg(feature = "full-native-tls")]
             accept_invalid_hostnames: config.accept_invalid_hostnames,
             extra_root_certificates: config
                 .extra_root_certificates

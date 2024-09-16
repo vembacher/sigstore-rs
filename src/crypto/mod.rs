@@ -16,7 +16,6 @@
 //! Structures and constants required to perform cryptographic operations.
 
 use sha2::{Sha256, Sha384};
-use std::convert::TryFrom;
 
 use crate::errors::*;
 
@@ -25,27 +24,27 @@ pub use verification_key::CosignVerificationKey;
 
 /// Different digital signature algorithms.
 /// * `RSA_PSS_SHA256`: RSA PSS padding using SHA-256
-/// for RSA signatures. All the `usize` member inside
-/// an RSA enum represents the key size of the RSA key.
+///    for RSA signatures. All the `usize` member inside
+///    an RSA enum represents the key size of the RSA key.
 /// * `RSA_PSS_SHA384`: RSA PSS padding using SHA-384
-/// for RSA signatures.
+///    for RSA signatures.
 /// * `RSA_PSS_SHA512`: RSA PSS padding using SHA-512
-/// for RSA signatures.
+///    for RSA signatures.
 /// * `RSA_PKCS1_SHA256`: PKCS#1 1.5 padding using
-/// SHA-256 for RSA signatures.
+///    SHA-256 for RSA signatures.
 /// * `RSA_PKCS1_SHA384`: PKCS#1 1.5 padding using
-/// SHA-384 for RSA signatures.
+///    SHA-384 for RSA signatures.
 /// * `RSA_PKCS1_SHA512`: PKCS#1 1.5 padding using
-/// SHA-512 for RSA signatures.
+///    SHA-512 for RSA signatures.
 /// * `ECDSA_P256_SHA256_ASN1`: ASN.1 DER-encoded ECDSA
-/// signatures using the P-256 curve and SHA-256. It
-/// is the default signing scheme.
+///    signatures using the P-256 curve and SHA-256. It
+///    is the default signing scheme.
 /// * `ECDSA_P384_SHA384_ASN1`: ASN.1 DER-encoded ECDSA
-/// signatures using the P-384 curve and SHA-384.
+///    signatures using the P-384 curve and SHA-384.
 /// * `ED25519`: ECDSA signature using SHA2-512
-/// as the digest function and curve edwards25519. The
-/// signature format please refer
-/// to [RFC 8032](https://www.rfc-editor.org/rfc/rfc8032.html#section-5.1.6).
+///    as the digest function and curve edwards25519. The
+///    signature format please refer
+///    to [RFC 8032](https://www.rfc-editor.org/rfc/rfc8032.html#section-5.1.6).
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SigningScheme {
@@ -60,20 +59,19 @@ pub enum SigningScheme {
     ED25519,
 }
 
-impl ToString for SigningScheme {
-    fn to_string(&self) -> String {
-        let str = match self {
-            SigningScheme::RSA_PSS_SHA256(_) => "RSA_PSS_SHA256",
-            SigningScheme::RSA_PSS_SHA384(_) => "RSA_PSS_SHA384",
-            SigningScheme::RSA_PSS_SHA512(_) => "RSA_PSS_SHA512",
-            SigningScheme::RSA_PKCS1_SHA256(_) => "RSA_PKCS1_SHA256",
-            SigningScheme::RSA_PKCS1_SHA384(_) => "RSA_PKCS1_SHA384",
-            SigningScheme::RSA_PKCS1_SHA512(_) => "RSA_PKCS1_SHA512",
-            SigningScheme::ECDSA_P256_SHA256_ASN1 => "ECDSA_P256_SHA256_ASN1",
-            SigningScheme::ECDSA_P384_SHA384_ASN1 => "ECDSA_P384_SHA384_ASN1",
-            SigningScheme::ED25519 => "ED25519",
-        };
-        String::from(str)
+impl std::fmt::Display for SigningScheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SigningScheme::RSA_PSS_SHA256(_) => write!(f, "RSA_PSS_SHA256"),
+            SigningScheme::RSA_PSS_SHA384(_) => write!(f, "RSA_PSS_SHA384"),
+            SigningScheme::RSA_PSS_SHA512(_) => write!(f, "RSA_PSS_SHA512"),
+            SigningScheme::RSA_PKCS1_SHA256(_) => write!(f, "RSA_PKCS1_SHA256"),
+            SigningScheme::RSA_PKCS1_SHA384(_) => write!(f, "RSA_PKCS1_SHA384"),
+            SigningScheme::RSA_PKCS1_SHA512(_) => write!(f, "RSA_PKCS1_SHA512"),
+            SigningScheme::ECDSA_P256_SHA256_ASN1 => write!(f, "ECDSA_P256_SHA256_ASN1"),
+            SigningScheme::ECDSA_P384_SHA384_ASN1 => write!(f, "ECDSA_P384_SHA384_ASN1"),
+            SigningScheme::ED25519 => write!(f, "ED25519"),
+        }
     }
 }
 
@@ -177,6 +175,10 @@ pub enum Signature<'a> {
 pub(crate) mod certificate;
 #[cfg(feature = "cert")]
 pub(crate) mod certificate_pool;
+#[cfg(feature = "cert")]
+pub(crate) use certificate_pool::CertificatePool;
+#[cfg(feature = "cert")]
+pub(crate) mod keyring;
 
 pub mod verification_key;
 
@@ -188,9 +190,12 @@ use self::signing_key::{
 
 pub mod signing_key;
 
+#[cfg(any(feature = "sign", feature = "verify"))]
+pub(crate) mod transparency;
+
 #[cfg(test)]
 pub(crate) mod tests {
-    use chrono::{DateTime, Duration, Utc};
+    use chrono::{DateTime, TimeDelta, Utc};
     use openssl::asn1::{Asn1Integer, Asn1Time};
     use openssl::bn::{BigNum, MsbOption};
     use openssl::conf::{Conf, ConfMethod};
@@ -231,8 +236,12 @@ OSWS1X9vPavpiQOoTTGC0xX57OojUadxF1cdQmrsiReWg2Wn4FneJfa8xw==
 
     impl Default for CertGenerationOptions {
         fn default() -> Self {
-            let not_before = Utc::now().checked_sub_signed(Duration::days(1)).unwrap();
-            let not_after = Utc::now().checked_add_signed(Duration::days(1)).unwrap();
+            let not_before = Utc::now()
+                .checked_sub_signed(TimeDelta::try_days(1).unwrap())
+                .unwrap();
+            let not_after = Utc::now()
+                .checked_add_signed(TimeDelta::try_days(1).unwrap())
+                .unwrap();
 
             // Sigstore relies on NIST P-256
             // NIST P-256 is a Weierstrass curve specified in FIPS 186-4: Digital Signature Standard (DSS):

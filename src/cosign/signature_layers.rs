@@ -16,11 +16,10 @@
 use const_oid::ObjectIdentifier;
 use digest::Digest;
 use oci_distribution::client::ImageLayer;
-use pkcs8::der::Decode;
 use serde::Serialize;
-use std::convert::TryFrom;
 use std::{collections::HashMap, fmt};
 use tracing::{debug, info, warn};
+use x509_cert::der::DecodePem;
 use x509_cert::ext::pkix::name::GeneralName;
 use x509_cert::ext::pkix::SubjectAltName;
 use x509_cert::Certificate;
@@ -98,8 +97,7 @@ pub enum CertificateSubject {
     Uri(String),
 }
 
-/// Object that contains all the data about a
-/// [`SimpleSigning`](crate::simple_signing::SimpleSigning) object.
+/// Object that contains all the data about a `SimpleSigning` object.
 ///
 /// The struct provides some helper methods that can be used at verification
 /// time.
@@ -429,23 +427,32 @@ impl CertificateSignature {
     /// Ensures the given certificate can be trusted, then extracts
     /// its details and returns them as a `CertificateSignature` object
     pub(crate) fn from_certificate(
-        cert_raw: &[u8],
+        cert_pem: &[u8],
         fulcio_cert_pool: &CertificatePool,
         trusted_bundle: &Bundle,
     ) -> Result<Self> {
-        let pem = pem::parse(cert_raw)?;
-        let cert = Certificate::from_der(&pem.contents)
-            .map_err(|e| SigstoreError::X509Error(format!("parse from der: {e}")))?;
+        let cert = Certificate::from_pem(cert_pem)
+            .map_err(|e| SigstoreError::X509Error(format!("parse from pem: {e}")))?;
         let integrated_time = trusted_bundle.payload.integrated_time;
 
         // ensure the certificate has been issued by Fulcio
-        fulcio_cert_pool.verify_pem_cert(cert_raw)?;
+        fulcio_cert_pool.verify_pem_cert(
+            cert_pem,
+            Some(webpki::types::UnixTime::since_unix_epoch(
+                cert.tbs_certificate.validity.not_before.to_unix_duration(),
+            )),
+        )?;
 
         crypto::certificate::is_trusted(&cert, integrated_time)?;
 
         let subject = CertificateSubject::from_certificate(&cert)?;
         let verification_key =
-            CosignVerificationKey::try_from(&cert.tbs_certificate.subject_public_key_info)?;
+            CosignVerificationKey::try_from(&cert.tbs_certificate.subject_public_key_info)
+                .map_err(|e| {
+                    SigstoreError::X509Error(format!(
+                        "cannot extract public key from certificate: {e}"
+                    ))
+                })?;
 
         let issuer = get_cert_extension_by_oid(&cert, SIGSTORE_ISSUER_OID, "Issuer")?;
 
@@ -506,7 +513,7 @@ fn get_cert_extension_by_oid(
         .iter()
         .find(|ext| ext.extn_id == ext_oid)
         .map(|ext| {
-            String::from_utf8(ext.extn_value.to_vec()).map_err(|_| {
+            String::from_utf8(ext.extn_value.clone().into_bytes()).map_err(|_| {
                 SigstoreError::X509Error(format!(
                     "Certificate's extension Sigstore {ext_oid_name} is not UTF8 compatible"
                 ))
@@ -542,8 +549,6 @@ pub(crate) mod tests {
     use super::*;
     use openssl::x509::X509;
     use serde_json::json;
-    use std::collections::HashMap;
-    use std::convert::TryFrom;
 
     use crate::cosign::tests::{get_fulcio_cert_pool, get_rekor_public_key};
 
@@ -868,7 +873,7 @@ JsB89BPhZYch0U0hKANx5TY+ncrm0s8bfJxxHoenAEFhwhuXeb4PqIrtoQ==
     use crate::cosign::bundle::Payload;
     use crate::crypto::tests::{generate_certificate, CertGenerationOptions};
     use crate::crypto::SigningScheme;
-    use chrono::{Duration, Utc};
+    use chrono::{TimeDelta, Utc};
 
     impl TryFrom<X509> for crate::registry::Certificate {
         type Error = anyhow::Error;
@@ -895,10 +900,14 @@ JsB89BPhZYch0U0hKANx5TY+ncrm0s8bfJxxHoenAEFhwhuXeb4PqIrtoQ==
 
         let issued_cert_pem = issued_cert.cert.to_pem()?;
 
-        let certs = vec![crate::registry::Certificate::try_from(ca_data.cert).unwrap()];
-        let cert_pool = CertificatePool::from_certificates(&certs).unwrap();
+        let certs = vec![crate::registry::Certificate::try_from(ca_data.cert)
+            .unwrap()
+            .try_into()?];
+        let cert_pool = CertificatePool::from_certificates(certs, []).unwrap();
 
-        let integrated_time = Utc::now().checked_sub_signed(Duration::minutes(1)).unwrap();
+        let integrated_time = Utc::now()
+            .checked_sub_signed(TimeDelta::try_minutes(1).unwrap())
+            .unwrap();
         let bundle = Bundle {
             signed_entry_timestamp: Default::default(),
             payload: Payload {
@@ -942,10 +951,14 @@ JsB89BPhZYch0U0hKANx5TY+ncrm0s8bfJxxHoenAEFhwhuXeb4PqIrtoQ==
 
         let issued_cert_pem = issued_cert.cert.to_pem()?;
 
-        let certs = vec![crate::registry::Certificate::try_from(ca_data.cert).unwrap()];
-        let cert_pool = CertificatePool::from_certificates(&certs).unwrap();
+        let certs = vec![crate::registry::Certificate::try_from(ca_data.cert)
+            .unwrap()
+            .try_into()?];
+        let cert_pool = CertificatePool::from_certificates(certs, []).unwrap();
 
-        let integrated_time = Utc::now().checked_sub_signed(Duration::minutes(1)).unwrap();
+        let integrated_time = Utc::now()
+            .checked_sub_signed(TimeDelta::try_minutes(1).unwrap())
+            .unwrap();
         let bundle = Bundle {
             signed_entry_timestamp: Default::default(),
             payload: Payload {
@@ -988,10 +1001,14 @@ JsB89BPhZYch0U0hKANx5TY+ncrm0s8bfJxxHoenAEFhwhuXeb4PqIrtoQ==
 
         let issued_cert_pem = issued_cert.cert.to_pem()?;
 
-        let certs = vec![crate::registry::Certificate::try_from(ca_data.cert).unwrap()];
-        let cert_pool = CertificatePool::from_certificates(&certs).unwrap();
+        let certs = vec![crate::registry::Certificate::try_from(ca_data.cert)
+            .unwrap()
+            .try_into()?];
+        let cert_pool = CertificatePool::from_certificates(certs, []).unwrap();
 
-        let integrated_time = Utc::now().checked_sub_signed(Duration::minutes(1)).unwrap();
+        let integrated_time = Utc::now()
+            .checked_sub_signed(TimeDelta::try_minutes(1).unwrap())
+            .unwrap();
         let bundle = Bundle {
             signed_entry_timestamp: Default::default(),
             payload: Payload {
