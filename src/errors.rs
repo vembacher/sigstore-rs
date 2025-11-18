@@ -70,6 +70,12 @@ pub enum SigstoreError {
     #[error(transparent)]
     Base64DecodeError(#[from] base64::DecodeError),
 
+    #[cfg(any(
+        feature = "verify",
+        feature = "sign",
+        feature = "sigstore-trust-root",
+        feature = "rekor"
+    ))]
     #[error(transparent)]
     HexDecodeError(#[from] hex::FromHexError),
 
@@ -88,13 +94,17 @@ pub enum SigstoreError {
     #[error("Certificate has not been issued for {0}")]
     CertificateInvalidEmail(String),
 
-    #[error("Certificate expired before signatures were entered in log: {integrated_time} is before {not_before}")]
+    #[error(
+        "Certificate expired before signatures were entered in log: {integrated_time} is before {not_before}"
+    )]
     CertificateExpiredBeforeSignaturesSubmittedToRekor {
         integrated_time: String,
         not_before: String,
     },
 
-    #[error("Certificate was issued after signatures were entered in log: {integrated_time} is after {not_after}")]
+    #[error(
+        "Certificate was issued after signatures were entered in log: {integrated_time} is after {not_after}"
+    )]
     CertificateIssuedAfterSignaturesSubmittedToRekor {
         integrated_time: String,
         not_after: String,
@@ -142,6 +152,9 @@ pub enum SigstoreError {
     #[error("Rekor request unsuccessful: {0}")]
     RekorClientError(String),
 
+    #[error("Rekor public key not found for key id {0}")]
+    RekorPublicKeyNotFoundError(String),
+
     #[error(transparent)]
     JoinError(#[from] tokio::task::JoinError),
 
@@ -154,8 +167,8 @@ pub enum SigstoreError {
     SCTError(#[from] crate::crypto::transparency::SCTError),
 
     // HACK(tnytown): Remove when we rework the Fulcio V2 endpoint.
-    #[cfg(feature = "fulcio")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "fulcio")))]
+    #[cfg(any(feature = "fulcio", feature = "oauth"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "fulcio", feature = "oauth"))))]
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),
 
@@ -211,6 +224,10 @@ pub enum SigstoreError {
 
     #[error("Verification of OIDC claims received from OpenIdProvider failed")]
     ClaimsVerificationError,
+
+    #[cfg(feature = "oauth")]
+    #[error("Claims configuration error: {0}")]
+    ClaimsConfigurationError(#[from] openidconnect::ConfigurationError),
 
     #[error("Failed to access token endpoint")]
     ClaimsAccessPointError,
